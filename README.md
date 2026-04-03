@@ -7,6 +7,7 @@ designed around event-driven architecture with strong consistency guarantees.
 
 ## Architecture
 
+```
 User (Next.js)
 │
 ▼
@@ -24,8 +25,7 @@ inventory-service (8081)
 │ └─ REJECTED → mark processed → publish result
 ▼
 [Kafka: inventory-results]
-
----
+```
 
 ## Tech Stack
 
