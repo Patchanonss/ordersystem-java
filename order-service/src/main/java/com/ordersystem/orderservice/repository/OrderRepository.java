@@ -12,4 +12,6 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
     Optional<Order> findByIdempotencyKey(String idempotencyKey);
 
     List<Order> findByQuantityGreaterThan(int quantity);
+
+    List<Order> findByStatus(String status);
 }

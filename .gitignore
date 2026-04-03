@@ -1,0 +1,43 @@
+# Node.js / Next.js (Frontend)
+node_modules/
+.next/
+out/
+build/
+.env*.local
+.vercel
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Java / Maven (Spring Boot Backend Services)
+target/
+*.class
+*.jar
+*.war
+*.nar
+*.ear
+*.log
+*.zip
+*.tar.gz
+*.rar
+hs_err_pid*
+
+# Maven wrapper
+.mvn/wrapper/maven-wrapper.jar
+
+# IDE & OS-specific files
+.idea/
+*.iml
+*.iws
+.vscode/
+.DS_Store
+*.swp
+*~
+Thumbs.db
+
+# Environment Variables
+.env
+
+# Additional specific ignores (optional, if you run db locally and mount data here)
+postgres-data/
+kafka-data/
