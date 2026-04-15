@@ -10,8 +10,8 @@ export const options = {
     { duration: '10s', target: 0 },
   ],
   thresholds: {
-    http_req_duration: ['p(95)<5000'],
-    http_req_failed: ['rate<0.5'],
+    http_req_duration: ['p(95)<1000'],  // พัง ถ้า p95 เกิน 1 วิ
+    http_req_failed: ['rate<0.05'],     // พัง ถ้า error เกิน 5%
   },
 };
 
