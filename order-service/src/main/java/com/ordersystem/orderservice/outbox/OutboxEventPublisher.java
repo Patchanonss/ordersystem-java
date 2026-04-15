@@ -9,7 +9,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -33,6 +33,7 @@ public class OutboxEventPublisher {
 
     private final OutboxEventRepository outboxEventRepository;
     private final KafkaTemplate<String, String> outboxKafkaTemplate;
+    private final TransactionTemplate transactionTemplate; // เพิ่มตรงนี้
 
     @Value("${outbox.polling.batch-size:20}")
     private int batchSize;
@@ -41,46 +42,42 @@ public class OutboxEventPublisher {
     private int maxRetryCount;
 
     @Scheduled(fixedDelayString = "${outbox.polling.interval-ms:5000}")
-    @Transactional
     public void publishPendingEvents() {
-        List<OutboxEvent> pendingEvents = outboxEventRepository
-                .findPendingEventsWithLock(batchSize);
+        // Step 1 — fetch events (transaction สั้นๆ แค่ read)
+        List<OutboxEvent> pendingEvents = transactionTemplate.execute(status ->
+                outboxEventRepository.findPendingEventsWithLock(batchSize));
 
-        if (pendingEvents.isEmpty()) {
-            return;
-        }
+        if (pendingEvents == null || pendingEvents.isEmpty()) return;
 
-        log.info("Outbox publisher found {} pending event(s) to process", pendingEvents.size());
+        log.info("Outbox publisher found {} pending event(s)", pendingEvents.size());
 
         for (OutboxEvent event : pendingEvents) {
             try {
-                // Send to Kafka — blocking to confirm delivery before updating status
+                // Step 2 — send Kafka (ไม่มี DB connection ตรงนี้)
                 outboxKafkaTemplate
                         .send(event.getTopic(), event.getPartitionKey(), event.getPayload())
                         .get(10, TimeUnit.SECONDS);
 
-                event.setStatus(OutboxStatus.SENT);
-                event.setSentAt(LocalDateTime.now());
-                outboxEventRepository.save(event);
+                // Step 3 — update status (transaction สั้นๆ แค่ write)
+                transactionTemplate.execute(status -> {
+                    event.setStatus(OutboxStatus.SENT);
+                    event.setSentAt(LocalDateTime.now());
+                    return outboxEventRepository.save(event);
+                });
 
-                log.info("Outbox event published: id={}, type={}, topic={}, aggregateId={}",
-                        event.getId(), event.getEventType(), event.getTopic(), event.getAggregateId());
+                log.info("Outbox event published: id={}, type={}", event.getId(), event.getEventType());
 
             } catch (Exception e) {
-                event.setRetryCount(event.getRetryCount() + 1);
-
-                if (event.getRetryCount() >= maxRetryCount) {
-                    event.setStatus(OutboxStatus.FAILED);
-                    log.error("Outbox event FAILED after {} retries: id={}, type={}, error={}",
-                            maxRetryCount, event.getId(), event.getEventType(), e.getMessage());
-                } else {
-                    // Keep as PENDING — will be retried on next poll cycle
-                    log.warn("Outbox event publish failed (retry {}/{}): id={}, type={}, error={}",
-                            event.getRetryCount(), maxRetryCount,
-                            event.getId(), event.getEventType(), e.getMessage());
-                }
-
-                outboxEventRepository.save(event);
+                transactionTemplate.execute(status -> {
+                    event.setRetryCount(event.getRetryCount() + 1);
+                    if (event.getRetryCount() >= maxRetryCount) {
+                        event.setStatus(OutboxStatus.FAILED);
+                        log.error("Outbox event FAILED after {} retries: id={}", maxRetryCount, event.getId());
+                    } else {
+                        log.warn("Outbox retry {}/{}: id={}", event.getRetryCount(), maxRetryCount, event.getId());
+                    }
+                    return outboxEventRepository.save(event);
+                });
             }
         }
     }

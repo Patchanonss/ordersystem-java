@@ -30,58 +30,54 @@ public class OrderService {
     private static final String TOPIC = "order-events";
 
     @Transactional
-    public Order createOrder(OrderRequest request) {
-        // Generate a unique idempotency key
-        String idempotencyKey = UUID.randomUUID().toString();
+public Order createOrder(OrderRequest request) {
+    String idempotencyKey = UUID.randomUUID().toString();
 
-        Order order = Order.builder()
-                .productName(request.getProductName())
-                .quantity(request.getQuantity())
-                .price(request.getPrice())
-                .status("PENDING")
-                .idempotencyKey(idempotencyKey)
-                .build();
+    Order order = Order.builder()
+            .productName(request.getProductName())
+            .quantity(request.getQuantity())
+            .price(request.getPrice())
+            .status("PENDING")
+            .idempotencyKey(idempotencyKey)
+            .build();
 
-        Order savedOrder = orderRepository.save(order);
-        log.info("Order saved with ID: {} and idempotencyKey: {}", savedOrder.getId(), idempotencyKey);
+    // Serialize ก่อน save — ถ้า fail ก็ throw ก่อน transaction เริ่ม
+    OrderEvent event = OrderEvent.builder()
+            .orderId(null) // ยังไม่มี ID
+            .productName(request.getProductName())
+            .quantity(request.getQuantity())
+            .price(request.getPrice())
+            .idempotencyKey(idempotencyKey)
+            .status("PENDING")
+            .build();
 
-        // Build Kafka event
-        OrderEvent event = OrderEvent.builder()
-                .orderId(savedOrder.getId())
-                .productName(savedOrder.getProductName())
-                .quantity(savedOrder.getQuantity())
-                .price(savedOrder.getPrice())
-                .idempotencyKey(idempotencyKey)
-                .status(savedOrder.getStatus())
-                .build();
-
-        // Outbox Pattern: instead of sending to Kafka directly, we serialize the event
-        // and save it to the outbox_events table in the SAME transaction as the order.
-        // This guarantees atomicity — either both order + outbox event are committed, or neither.
-        // The OutboxEventPublisher (scheduler) will pick up PENDING events and publish to Kafka.
-        try {
-            String payload = objectMapper.writeValueAsString(event);
-
-            OutboxEvent outboxEvent = OutboxEvent.builder()
-                    .aggregateType("Order")
-                    .aggregateId(String.valueOf(savedOrder.getId()))
-                    .eventType("ORDER_CREATED")
-                    .topic(TOPIC)
-                    .partitionKey(idempotencyKey)
-                    .payload(payload)
-                    .status(OutboxStatus.PENDING)
-                    .build();
-
-            outboxEventRepository.save(outboxEvent);
-            log.info("Outbox event saved for orderId={}, idempotencyKey={}", savedOrder.getId(), idempotencyKey);
-
-        } catch (JsonProcessingException e) {
-            log.error("Failed to serialize OrderEvent for orderId={}: {}", savedOrder.getId(), e.getMessage());
-            throw new RuntimeException("Failed to serialize order event for outbox", e);
-        }
-
-        return savedOrder;
+    String payload;
+    try {
+        payload = objectMapper.writeValueAsString(event);
+    } catch (JsonProcessingException e) {
+        log.error("Failed to serialize OrderEvent: {}", e.getMessage());
+        throw new RuntimeException("Failed to serialize order event", e);
     }
+
+    // Transaction เริ่มตรงนี้จริงๆ — แค่ 2 DB writes ไม่มีอะไรแทรก
+    Order savedOrder = orderRepository.save(order);
+    log.info("Order saved with ID: {} and idempotencyKey: {}", savedOrder.getId(), idempotencyKey);
+
+    OutboxEvent outboxEvent = OutboxEvent.builder()
+            .aggregateType("Order")
+            .aggregateId(String.valueOf(savedOrder.getId()))
+            .eventType("ORDER_CREATED")
+            .topic(TOPIC)
+            .partitionKey(idempotencyKey)
+            .payload(payload)
+            .status(OutboxStatus.PENDING)
+            .build();
+
+    outboxEventRepository.save(outboxEvent);
+    log.info("Outbox event saved for orderId={}, idempotencyKey={}", savedOrder.getId(), idempotencyKey);
+
+    return savedOrder;
+}
     
     @Transactional
     public Order patchOrder(Long id, PatchOrderRequest patch){
