@@ -1,21 +1,22 @@
 package com.ordersystem.orderservice.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ordersystem.orderservice.dto.OrderEvent;
 import com.ordersystem.orderservice.dto.OrderRequest;
 import com.ordersystem.orderservice.dto.PatchOrderRequest;
 import com.ordersystem.orderservice.model.Order;
+import com.ordersystem.orderservice.model.OutboxEvent;
+import com.ordersystem.orderservice.model.OutboxStatus;
 import com.ordersystem.orderservice.repository.OrderRepository;
+import com.ordersystem.orderservice.repository.OutboxEventRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 @Service
 @RequiredArgsConstructor
@@ -23,7 +24,8 @@ import java.util.concurrent.TimeoutException;
 public class OrderService {
 
     private final OrderRepository orderRepository;
-    private final KafkaTemplate<String, OrderEvent> kafkaTemplate;
+    private final OutboxEventRepository outboxEventRepository;
+    private final ObjectMapper objectMapper;
 
     private static final String TOPIC = "order-events";
 
@@ -53,14 +55,29 @@ public class OrderService {
                 .status(savedOrder.getStatus())
                 .build();
 
-        // Publish to Kafka — block to ensure delivery before committing the transaction.
-        // If Kafka send fails, the exception causes a transaction rollback (no orphan orders).
+        // Outbox Pattern: instead of sending to Kafka directly, we serialize the event
+        // and save it to the outbox_events table in the SAME transaction as the order.
+        // This guarantees atomicity — either both order + outbox event are committed, or neither.
+        // The OutboxEventPublisher (scheduler) will pick up PENDING events and publish to Kafka.
         try {
-            kafkaTemplate.send(TOPIC, idempotencyKey, event).get(10, TimeUnit.SECONDS);
-            log.info("OrderEvent published to topic '{}': {}", TOPIC, event);
-        } catch (ExecutionException | InterruptedException | TimeoutException e) {
-            log.error("Failed to publish OrderEvent to Kafka for orderId={}: {}", savedOrder.getId(), e.getMessage());
-            throw new RuntimeException("Failed to publish order event to Kafka", e);
+            String payload = objectMapper.writeValueAsString(event);
+
+            OutboxEvent outboxEvent = OutboxEvent.builder()
+                    .aggregateType("Order")
+                    .aggregateId(String.valueOf(savedOrder.getId()))
+                    .eventType("ORDER_CREATED")
+                    .topic(TOPIC)
+                    .partitionKey(idempotencyKey)
+                    .payload(payload)
+                    .status(OutboxStatus.PENDING)
+                    .build();
+
+            outboxEventRepository.save(outboxEvent);
+            log.info("Outbox event saved for orderId={}, idempotencyKey={}", savedOrder.getId(), idempotencyKey);
+
+        } catch (JsonProcessingException e) {
+            log.error("Failed to serialize OrderEvent for orderId={}: {}", savedOrder.getId(), e.getMessage());
+            throw new RuntimeException("Failed to serialize order event for outbox", e);
         }
 
         return savedOrder;

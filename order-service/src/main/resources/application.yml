@@ -30,3 +30,14 @@ logging:
   level:
     com.ordersystem: INFO
     org.apache.kafka: WARN
+
+# Outbox Pattern configuration
+outbox:
+  polling:
+    interval-ms: 5000       # Poll outbox_events table every 5 seconds
+    batch-size: 20           # Max events to process per poll cycle
+  cleanup:
+    interval-ms: 3600000     # Run cleanup every 1 hour
+    retention-days: 7        # Delete SENT events older than 7 days
+  max-retry-count: 5         # Max publish retries before marking FAILED
+
